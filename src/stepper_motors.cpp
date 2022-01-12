@@ -12,6 +12,15 @@ static constexpr auto PIN_M1_DIR = 2;
 static uint32_t lastSteppersTime_ms = 0;
 static constexpr uint32_t STEPPERS_TIMEOUT_MS = 500;
 
+static constexpr auto RIGHT_MOTOR_SIGN = 1;
+static constexpr auto LEFT_MOTOR_SIGN = -1;
+
+static constexpr auto GEAR_RATIO = 59.0F / 13.0F;
+static constexpr auto STEPS_PER_ROUND = 800;
+static constexpr auto WHEEL_DIAM = 0.12F;
+
+static volatile int64_t odomStepsLeft = 0, odomStepsRight = 0;
+
 void steppersInit()
 {
     pinMode(PIN_M0_ENABLE, OUTPUT);
@@ -48,6 +57,8 @@ void steppersInit()
 
     TC2->TC_CHANNEL[1].TC_IER = TC_IER_CPCS; // Interrupt on RC compare match
     NVIC_EnableIRQ(TC7_IRQn);
+
+    odomStepsLeft = odomStepsRight = 0;
 }
 
 void steppersEnable()
@@ -65,29 +76,29 @@ void steppersDisable()
     digitalWrite(PIN_M1_ENABLE, 1);
 }
 
-bool steppersAreEnabled() {
+bool steppersAreEnabled()
+{
     return !digitalRead(PIN_M0_ENABLE) || !digitalRead(PIN_M1_ENABLE);
 }
 
+float distToSteps(float dist_m)
+{
+    return dist_m / (WHEEL_DIAM * static_cast<float>(PI)) * GEAR_RATIO * STEPS_PER_ROUND;
+};
+
+double stepsToDist(int64_t steps)
+{
+    return steps / (GEAR_RATIO * STEPS_PER_ROUND) * WHEEL_DIAM * PI;
+};
+
 void steppersSetSpeed(float left_mps, float right_mps)
 {
-    auto calcSteps_ps = [](float vel_mps)
-    {
-        static constexpr auto GEAR_RATIO = 37.0F / 13.0F;
-        static constexpr auto STEPS_PER_ROUND = 800;
-        static constexpr auto WHEEL_DIAM = 0.12F;
-
-        return vel_mps / (WHEEL_DIAM * static_cast<float>(PI)) * GEAR_RATIO * STEPS_PER_ROUND;
-    };
-
-    steppersSetSpeedSteps(calcSteps_ps(left_mps), calcSteps_ps(right_mps));
+    steppersSetSpeedSteps(distToSteps(left_mps), distToSteps(right_mps));
 }
 
 void steppersSetSpeedSteps(float leftSteps_ps, float rightSteps_ps)
 {
     static constexpr auto MIN_STEPS_PS = 1.0F;
-    static constexpr auto RIGHT_MOTOR_SIGN = 1.0F;
-    static constexpr auto LEFT_MOTOR_SIGN = -1.0F;
 
     // reverse if necessary
     leftSteps_ps *= LEFT_MOTOR_SIGN;
@@ -98,7 +109,8 @@ void steppersSetSpeedSteps(float leftSteps_ps, float rightSteps_ps)
     TC2->TC_CHANNEL[1].TC_CCR = 0;
 
     // turn off motors if speed close to zero
-    if(abs(leftSteps_ps) < MIN_STEPS_PS || abs(rightSteps_ps) < MIN_STEPS_PS) {
+    if (abs(leftSteps_ps) < MIN_STEPS_PS || abs(rightSteps_ps) < MIN_STEPS_PS)
+    {
         steppersDisable();
         return;
     }
@@ -132,7 +144,8 @@ void steppersSetSpeedSteps(float leftSteps_ps, float rightSteps_ps)
 
 void stepperCheckTimeout()
 {
-    if(steppersAreEnabled()) {
+    if (steppersAreEnabled())
+    {
         const auto millisElapsed = millis() - lastSteppersTime_ms;
 
         if (millisElapsed >= STEPPERS_TIMEOUT_MS)
@@ -142,12 +155,56 @@ void stepperCheckTimeout()
     }
 }
 
+void steppersGetDist(double &left, double &right)
+{
+    NVIC_DisableIRQ(TC6_IRQn);
+    NVIC_DisableIRQ(TC7_IRQn);
+
+    const auto leftSteps = odomStepsLeft;
+    const auto rightSteps = odomStepsRight;
+
+    NVIC_EnableIRQ(TC6_IRQn);
+    NVIC_EnableIRQ(TC7_IRQn);
+
+    Serial.print("steps: ");
+    Serial.print((int)leftSteps);
+    Serial.print(" ");
+    Serial.println((int)rightSteps);
+
+    left = stepsToDist(leftSteps);
+    right = stepsToDist(rightSteps);
+}
+
 void TC6_Handler()
 {
-    TC2->TC_CHANNEL[0].TC_SR;
+    TC2->TC_CHANNEL[0].TC_SR; // clear interrupt flag
+
+    if (digitalRead(PIN_M0_ENABLE) == 0)
+    {
+        if (digitalRead(PIN_M0_DIR))
+        {
+            odomStepsLeft += LEFT_MOTOR_SIGN;
+        }
+        else
+        {
+            odomStepsLeft -= LEFT_MOTOR_SIGN;
+        }
+    }
 }
 
 void TC7_Handler()
 {
-    TC2->TC_CHANNEL[1].TC_SR;
+    TC2->TC_CHANNEL[1].TC_SR; // clear interrupt flag
+
+    if (digitalRead(PIN_M1_ENABLE) == 0)
+    {
+        if (digitalRead(PIN_M1_DIR))
+        {
+            odomStepsRight += RIGHT_MOTOR_SIGN;
+        }
+        else
+        {
+            odomStepsRight -= RIGHT_MOTOR_SIGN;
+        }
+    }
 }

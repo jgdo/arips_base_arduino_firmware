@@ -49,8 +49,8 @@ void cmdVelCb(const geometry_msgs::Twist &msg)
 {
   static constexpr auto MAX_WHEEL_SPEED = 1.5F;
 
-  float left = msg.linear.x - msg.angular.z * WHEEL_DIST;
-  float right = msg.linear.x + msg.angular.z * WHEEL_DIST;
+  float left = msg.linear.x - msg.angular.z * WHEEL_DIST * 0.5;
+  float right = msg.linear.x + msg.angular.z * WHEEL_DIST * 0.5;
 
   const auto m = abs(max(left, right));
   if (m > MAX_WHEEL_SPEED)

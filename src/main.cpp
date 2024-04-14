@@ -8,11 +8,14 @@
 #include <geometry_msgs/Twist.h>
 #include <std_msgs/UInt32.h>
 #include <std_msgs/Empty.h>
+#include <std_srvs/SetBool.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/BatteryState.h>
 #include <nav_msgs/Odometry.h>
 #include <tf/tf.h>
 #include <tf/tfMessage.h>
+
+static bool publishTfEnabled = true;
 
 class MyTransformBroadcaster
 {
@@ -113,9 +116,17 @@ void calibrationAccelGyroCb(const std_msgs::Empty &)
   nh.loginfo(stringbuf);
 }
 
+void enableTfCb(const std_srvs::SetBoolRequest& request, std_srvs::SetBoolResponse& response) {
+  publishTfEnabled = request.data;
+  response.success = true;
+  response.message = "";
+}
+
 ros::Subscriber<std_msgs::Empty> accelGyroSub("imu/calibrate_accel_gyro", &calibrationAccelGyroCb);
 ros::Subscriber<geometry_msgs::Twist> cmdVelSub("cmd_vel", &cmdVelCb);
 ros::Subscriber<std_msgs::UInt32> baseBatterySub("base_battery_enable_for_sec", &baseBatteryCb);
+
+ros::ServiceServer<std_srvs::SetBoolRequest, std_srvs::SetBoolResponse> enableTfService("publish_tf_arips_base", &enableTfCb);
 
 sensor_msgs::Imu imu_msg;
 sensor_msgs::BatteryState batteryStateMsg;
@@ -157,6 +168,7 @@ void setup()
   nh.subscribe(accelGyroSub);
   nh.subscribe(cmdVelSub);
   nh.subscribe(baseBatterySub);
+  nh.advertiseService(enableTfService);
 
   tfBroadcaster.init(nh);
 
@@ -305,12 +317,12 @@ void updateOdometry()
     odomMsg.twist.twist.linear.x = speed;
     odomMsg.twist.twist.angular.z = rotSpeed;
 
-    odomMsg.pose.covariance[0] = 0.01;
-    odomMsg.pose.covariance[7] = 0.01;
+    odomMsg.pose.covariance[0] = 0.03;
+    odomMsg.pose.covariance[7] = 0.03;
     odomMsg.pose.covariance[14] = 99999;
     odomMsg.pose.covariance[21] = 99999;
     odomMsg.pose.covariance[28] = 99999;
-    odomMsg.pose.covariance[35] = 0.01;
+    odomMsg.pose.covariance[35] = 0.03;
 
     odomMsg.header.stamp = nh.now();
     odomMsg.header.frame_id = "odom";
@@ -320,12 +332,14 @@ void updateOdometry()
 
     odomPub.publish(&odomMsg);
 
-    tfMsg.header = odomMsg.header;
-    tfMsg.child_frame_id = "arips_base";
-    tfMsg.transform.translation.x = posX;
-    tfMsg.transform.translation.y = posY;
-    tfMsg.transform.rotation = odomMsg.pose.pose.orientation;
-    tfBroadcaster.sendTransform(tfMsg);
+    if(publishTfEnabled) {
+      tfMsg.header = odomMsg.header;
+      tfMsg.child_frame_id = "arips_base";
+      tfMsg.transform.translation.x = posX;
+      tfMsg.transform.translation.y = posY;
+      tfMsg.transform.rotation = odomMsg.pose.pose.orientation;
+      tfBroadcaster.sendTransform(tfMsg);
+    }
 
     prev_ms = millis();
   }

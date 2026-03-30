@@ -166,10 +166,10 @@ void steppersGetDist(double &left, double &right)
     NVIC_EnableIRQ(TC6_IRQn);
     NVIC_EnableIRQ(TC7_IRQn);
 
-    Serial.print("steps: ");
-    Serial.print((int)leftSteps);
-    Serial.print(" ");
-    Serial.println((int)rightSteps);
+    // Serial.print("steps: ");
+    // Serial.print((int)leftSteps);
+    // Serial.print(" ");
+    // Serial.println((int)rightSteps);
 
     left = stepsToDist(leftSteps);
     right = stepsToDist(rightSteps);

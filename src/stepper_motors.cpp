@@ -17,7 +17,7 @@ static constexpr auto LEFT_MOTOR_SIGN = -1;
 
 static constexpr auto GEAR_RATIO = 59.0F / 13.0F;
 static constexpr auto STEPS_PER_ROUND = 800;
-static constexpr auto WHEEL_DIAM = 0.12F;
+static constexpr auto WHEEL_DIAM = 0.108F;
 
 static volatile int64_t odomStepsLeft = 0, odomStepsRight = 0;
 

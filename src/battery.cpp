@@ -10,8 +10,8 @@ static uint32_t lastBatteryTime_ms = 0;
 
 void batteryInit()
 {
-    digitalWrite(PIN_BATTERY_SW, 0);
     pinMode(PIN_BATTERY_SW, OUTPUT);
+    digitalWrite(PIN_BATTERY_SW, 0);
 }
 
 void batterySet(bool on)

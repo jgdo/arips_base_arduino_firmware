@@ -9,13 +9,20 @@
 MPU9250 mpu;
 
 // Constants
-static constexpr auto WHEEL_DIST = 0.33F;
+static constexpr auto WHEEL_DIST = 0.317F;
 static constexpr auto MAX_WHEEL_SPEED = 1.5F;
 static constexpr size_t SERIAL_BUF_SIZE = 512;
+static const char* const ODOM_CHILD_FRAME_ID = "arips_wheel_center";
+
+// Time synchronization: offset added to millis() to match host clock
+static uint64_t millisOffset = 0;
 
 // Serial input buffer
 static char inputBuf[SERIAL_BUF_SIZE];
 static size_t inputLen = 0;
+
+// Return synchronized time in milliseconds
+static uint64_t syncedMillis() { return (uint64_t)millis() + millisOffset; }
 
 // ---------------------------------------------------------------------------
 // Helpers for publishing (sending JSON lines over SerialUSB)
@@ -62,7 +69,7 @@ static void publishImu(const char* frameId, uint32_t sec, uint32_t nsec,
   for (int i = 0; i < 9; i++) lac.add(0.0);
   lac[0] = 0.0025; lac[4] = 0.0025; lac[8] = 0.0025;
 
-  SerialUSB.print("imu sensor_msgs/msg/Imu ");
+  SerialUSB.print("pub imu sensor_msgs/msg/Imu ");
   serializeJson(doc, SerialUSB);
   SerialUSB.println();
 }
@@ -88,7 +95,7 @@ static void publishBatteryState(uint32_t sec, uint32_t nsec,
   doc["power_supply_technology"] = 2; // LION
   doc["present"] = present;
 
-  SerialUSB.print("base_battery_state sensor_msgs/msg/BatteryState ");
+  SerialUSB.print("pub base_battery_state sensor_msgs/msg/BatteryState ");
   serializeJson(doc, SerialUSB);
   SerialUSB.println();
 }
@@ -105,7 +112,7 @@ static void publishOdometry(uint32_t sec, uint32_t nsec,
   stamp["sec"] = sec;
   stamp["nanosec"] = nsec;
   header["frame_id"] = "odom";
-  doc["child_frame_id"] = "arips_base";
+  doc["child_frame_id"] = ODOM_CHILD_FRAME_ID;
 
   JsonObject pose = doc.createNestedObject("pose");
   JsonObject pose_pose = pose.createNestedObject("pose");
@@ -139,7 +146,41 @@ static void publishOdometry(uint32_t sec, uint32_t nsec,
   JsonArray tc = twist.createNestedArray("covariance");
   for (int i = 0; i < 36; i++) tc.add(poseCovariance[i]);
 
-  SerialUSB.print("odom nav_msgs/msg/Odometry ");
+  SerialUSB.print("pub odom nav_msgs/msg/Odometry ");
+  serializeJson(doc, SerialUSB);
+  SerialUSB.println();
+}
+
+static void publishTfOdom(uint32_t sec, uint32_t nsec,
+                          double posX, double posY, double yaw)
+{
+  StaticJsonDocument<512> doc;
+
+  JsonArray transforms = doc.createNestedArray("transforms");
+  JsonObject tf = transforms.createNestedObject();
+
+  JsonObject header = tf.createNestedObject("header");
+  JsonObject stamp = header.createNestedObject("stamp");
+  stamp["sec"] = sec;
+  stamp["nanosec"] = nsec;
+  header["frame_id"] = "odom";
+  tf["child_frame_id"] = ODOM_CHILD_FRAME_ID;
+
+  JsonObject transform = tf.createNestedObject("transform");
+  JsonObject translation = transform.createNestedObject("translation");
+  translation["x"] = posX;
+  translation["y"] = posY;
+  translation["z"] = 0.0;
+
+  double cy = cos(yaw * 0.5);
+  double sy = sin(yaw * 0.5);
+  JsonObject rotation = transform.createNestedObject("rotation");
+  rotation["x"] = 0.0;
+  rotation["y"] = 0.0;
+  rotation["z"] = sy;
+  rotation["w"] = cy;
+
+  SerialUSB.print("pub /tf tf2_msgs/msg/TFMessage ");
   serializeJson(doc, SerialUSB);
   SerialUSB.println();
 }
@@ -208,21 +249,67 @@ static void handleCalibrateAccelGyro()
   Serial.println(stringbuf);
 }
 
+// Odometry state (file-level so it can be reset externally)
+static double odomPosX = 0;
+static double odomPosY = 0;
+static double odomYaw = 0;
+static double odomOldStepsLeft = 0;
+static double odomOldStepsRight = 0;
+
+static void handleResetOdometry()
+{
+  odomPosX = 0;
+  odomPosY = 0;
+  odomYaw = 0;
+  Serial.println("Odometry reset");
+}
+
+
 // ---------------------------------------------------------------------------
 // Parse an incoming serial line
 // ---------------------------------------------------------------------------
 
 static void processLine(const char* line)
 {
-  // Format: "<topic> <type> <json>"
+  // Handle "list_subs" command
+  if (strcmp(line, "list_subs") == 0)
+  {
+    SerialUSB.println("subscriptions ["
+      "{\"cmd_vel\": \"geometry_msgs/msg/Twist\"}, "
+      "{\"base_battery_enable_for_sec\": \"std_msgs/msg/UInt32\"}, "
+      "{\"imu/calibrate_accel_gyro\": \"std_msgs/msg/Empty\"}, "
+      "{\"base_reset_odometry\": \"std_msgs/msg/Empty\"}"
+      "]");
+    return;
+  }
+
+  // Handle "timestamp <sec> <nsec>" command
+  if (strncmp(line, "timestamp ", 10) == 0)
+  {
+    uint32_t sec = 0, nsec = 0;
+    if (sscanf(line + 10, "%lu %lu", &sec, &nsec) >= 1)
+    {
+      uint64_t hostMs = (uint64_t)sec * 1000ULL + (uint64_t)nsec / 1000000ULL;
+      millisOffset = hostMs - (uint64_t)millis();
+      Serial.print("Time synced, offset: ");
+      Serial.println((long)millisOffset);
+    }
+    return;
+  }
+
+  // Format: "pub <topic> <type> <json>"
+  // Expect "pub" as first word
+  if (strncmp(line, "pub ", 4) != 0) return;
+  const char* rest = line + 4;
+
   // Find first space -> topic
-  const char* p1 = strchr(line, ' ');
+  const char* p1 = strchr(rest, ' ');
   if (!p1) return;
 
-  size_t topicLen = p1 - line;
+  size_t topicLen = p1 - rest;
   char topic[64];
   if (topicLen >= sizeof(topic)) return;
-  memcpy(topic, line, topicLen);
+  memcpy(topic, rest, topicLen);
   topic[topicLen] = '\0';
 
   // Find second space -> type (we skip type for dispatch, but need to find json start)
@@ -259,6 +346,11 @@ static void processLine(const char* line)
   {
     // Empty message, no JSON payload needed
     handleCalibrateAccelGyro();
+  }
+  else if (strcmp(topic, "base_reset_odometry") == 0)
+  {
+    // Empty message, no JSON payload needed
+    handleResetOdometry();
   }
   else
   {
@@ -312,7 +404,7 @@ static void update_imu()
     static uint32_t prev_ms = millis();
     if (millis() > prev_ms + 25)
     {
-      uint32_t now = millis();
+      uint64_t now = syncedMillis();
       publishImu("imu",
                   (uint32_t)(now / 1000),
                   (uint32_t)((now % 1000) * 1000000),
@@ -337,7 +429,7 @@ static void update_battery_voltage()
   static uint32_t prev_ms = millis();
   if (millis() > prev_ms + 1000)
   {
-    uint32_t now = millis();
+    uint64_t now = syncedMillis();
     publishBatteryState(
       (uint32_t)(now / 1000),
       (uint32_t)((now % 1000) * 1000000),
@@ -350,11 +442,6 @@ static void update_battery_voltage()
 
 static void update_odometry()
 {
-  static double posX = 0;
-  static double posY = 0;
-  static double yaw = 0;
-  static double oldStepsLeft = 0;
-  static double oldStepsRight = 0;
 
   static uint32_t prev_ms = millis();
   const auto dMillis = millis() - prev_ms;
@@ -362,21 +449,21 @@ static void update_odometry()
   {
     double left, right;
     steppersGetDist(left, right);
-    const auto dL = left - oldStepsLeft;
-    const auto dR = right - oldStepsRight;
-    oldStepsLeft = left;
-    oldStepsRight = right;
+    const auto dL = left - odomOldStepsLeft;
+    const auto dR = right - odomOldStepsRight;
+    odomOldStepsLeft = left;
+    odomOldStepsRight = right;
 
     const auto dDist = (dL + dR) / 2.0;
     const auto dYaw = (dR - dL) / WHEEL_DIST;
 
-    posX += dDist * cos(yaw + dYaw / 2.0);
-    posY += dDist * sin(yaw + dYaw / 2.0);
-    yaw += dYaw;
-    if (yaw > PI)
-      yaw -= 2 * PI;
-    else if (yaw < -PI)
-      yaw += 2 * PI;
+    odomPosX += dDist * cos(odomYaw + dYaw / 2.0);
+    odomPosY += dDist * sin(odomYaw + dYaw / 2.0);
+    odomYaw += dYaw;
+    if (odomYaw > PI)
+      odomYaw -= 2 * PI;
+    else if (odomYaw < -PI)
+      odomYaw += 2 * PI;
 
     const auto dt = dMillis * 0.001;
     const auto speed = dDist / dt;
@@ -390,13 +477,18 @@ static void update_odometry()
     covariance[28] = 99999;
     covariance[35] = 0.03;
 
-    uint32_t now = millis();
+    uint64_t now = syncedMillis();
     publishOdometry(
       (uint32_t)(now / 1000),
       (uint32_t)((now % 1000) * 1000000),
-      posX, posY, yaw,
+      odomPosX, odomPosY, odomYaw,
       speed, rotSpeed,
       covariance);
+
+    publishTfOdom(
+      (uint32_t)(now / 1000),
+      (uint32_t)((now % 1000) * 1000000),
+      odomPosX, odomPosY, odomYaw);
 
     prev_ms = millis();
   }
@@ -408,15 +500,16 @@ static void update_odometry()
 
 void setup()
 {
+  batteryInit();
+  steppersInit();
+
   Serial.begin(115200);
   Serial.println("Initializing...");
 
-  SerialUSB.begin(115200);
+  SerialUSB.begin(1000000);
 
   analogReadResolution(12);
 
-  steppersInit();
-  batteryInit();
 
   Wire.begin();
 

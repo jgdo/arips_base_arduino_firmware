@@ -11,11 +11,12 @@ MPU9250 mpu;
 // Constants
 static constexpr auto WHEEL_DIST = 0.317F;
 static constexpr auto MAX_WHEEL_SPEED = 1.5F;
-static constexpr size_t SERIAL_BUF_SIZE = 512;
+static constexpr size_t SERIAL_BUF_SIZE = 1000;
 static const char* const ODOM_CHILD_FRAME_ID = "arips_wheel_center";
 
 // Time synchronization: offset added to millis() to match host clock
 static uint64_t millisOffset = 0;
+static bool publishTfOdomEnabled = true;
 
 // Serial input buffer
 static char inputBuf[SERIAL_BUF_SIZE];
@@ -105,13 +106,13 @@ static void publishOdometry(uint32_t sec, uint32_t nsec,
                             double speed, double rotSpeed,
                             const double poseCovariance[36])
 {
-  StaticJsonDocument<1536> doc;
+  StaticJsonDocument<2048> doc;
 
   JsonObject header = doc.createNestedObject("header");
   JsonObject stamp = header.createNestedObject("stamp");
   stamp["sec"] = sec;
   stamp["nanosec"] = nsec;
-  header["frame_id"] = "odom";
+  header["frame_id"] = "wheel_odom";
   doc["child_frame_id"] = ODOM_CHILD_FRAME_ID;
 
   JsonObject pose = doc.createNestedObject("pose");
@@ -163,7 +164,7 @@ static void publishTfOdom(uint32_t sec, uint32_t nsec,
   JsonObject stamp = header.createNestedObject("stamp");
   stamp["sec"] = sec;
   stamp["nanosec"] = nsec;
-  header["frame_id"] = "odom";
+  header["frame_id"] = "wheel_odom";
   tf["child_frame_id"] = ODOM_CHILD_FRAME_ID;
 
   JsonObject transform = tf.createNestedObject("transform");
@@ -211,6 +212,11 @@ static void handleBatteryEnable(JsonObjectConst json)
 {
   uint32_t secs = json["data"] | 0u;
   batterySetWithTimeoutMs(secs * 1000);
+}
+
+static void handleEnablePublishTf(JsonObjectConst json)
+{
+  publishTfOdomEnabled = json["data"] | false;
 }
 
 static void handleCalibrateAccelGyro()
@@ -277,6 +283,7 @@ static void processLine(const char* line)
     SerialUSB.println("subscriptions ["
       "{\"cmd_vel\": \"geometry_msgs/msg/Twist\"}, "
       "{\"base_battery_enable_for_sec\": \"std_msgs/msg/UInt32\"}, "
+      "{\"enable_publish_tf\": \"std_msgs/msg/Bool\"}, "
       "{\"imu/calibrate_accel_gyro\": \"std_msgs/msg/Empty\"}, "
       "{\"base_reset_odometry\": \"std_msgs/msg/Empty\"}"
       "]");
@@ -341,6 +348,18 @@ static void processLine(const char* line)
       return;
     }
     handleBatteryEnable(doc.as<JsonObjectConst>());
+  }
+  else if (strcmp(topic, "enable_publish_tf") == 0)
+  {
+    StaticJsonDocument<64> doc;
+    DeserializationError err = deserializeJson(doc, jsonStr);
+    if (err)
+    {
+      Serial.print("enable_publish_tf JSON parse error: ");
+      Serial.println(err.c_str());
+      return;
+    }
+    handleEnablePublishTf(doc.as<JsonObjectConst>());
   }
   else if (strcmp(topic, "imu/calibrate_accel_gyro") == 0)
   {
@@ -472,9 +491,9 @@ static void update_odometry()
     double covariance[36] = {0};
     covariance[0] = 0.03;
     covariance[7] = 0.03;
-    covariance[14] = 99999;
-    covariance[21] = 99999;
-    covariance[28] = 99999;
+    covariance[14] = 1;
+    covariance[21] = 1;
+    covariance[28] = 1;
     covariance[35] = 0.03;
 
     uint64_t now = syncedMillis();
@@ -485,10 +504,13 @@ static void update_odometry()
       speed, rotSpeed,
       covariance);
 
-    publishTfOdom(
-      (uint32_t)(now / 1000),
-      (uint32_t)((now % 1000) * 1000000),
-      odomPosX, odomPosY, odomYaw);
+    if (publishTfOdomEnabled)
+    {
+      publishTfOdom(
+        (uint32_t)(now / 1000),
+        (uint32_t)((now % 1000) * 1000000),
+        odomPosX, odomPosY, odomYaw);
+    }
 
     prev_ms = millis();
   }

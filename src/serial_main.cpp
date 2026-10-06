@@ -16,7 +16,7 @@ static const char* const ODOM_CHILD_FRAME_ID = "arips_wheel_center";
 
 // Time synchronization: offset added to millis() to match host clock
 static uint64_t millisOffset = 0;
-static bool publishTfOdomEnabled = true;
+static bool publishTfOdomEnabled = false;
 
 // Serial input buffer
 static char inputBuf[SERIAL_BUF_SIZE];
@@ -192,8 +192,19 @@ static void publishTfOdom(uint32_t sec, uint32_t nsec,
 
 static void handleCmdVel(JsonObjectConst json)
 {
-  float linX = json["linear"]["x"] | 0.0f;
-  float angZ = json["angular"]["z"] | 0.0f;
+  const auto stamp = json["header"]["stamp"];
+  const int32_t stampSec = stamp["sec"] | -1;
+  const uint32_t stampNsec = stamp["nanosec"] | 1000000000u;
+  const uint64_t nowNsec = syncedMillis() * 1000000ULL;
+  const uint64_t stampNsecTotal = stampSec < 0 || stampNsec >= 1000000000u
+    ? 0
+    : (uint64_t)stampSec * 1000000000ULL + stampNsec;
+  const bool stale = stampSec < 0 || stampNsec >= 1000000000u ||
+    (nowNsec > stampNsecTotal && nowNsec - stampNsecTotal > 1000000000ULL);
+
+  const auto twist = json["twist"];
+  float linX = stale ? 0.0f : (twist["linear"]["x"] | 0.0f);
+  float angZ = stale ? 0.0f : (twist["angular"]["z"] | 0.0f);
 
   float left = linX - angZ * WHEEL_DIST * 0.5f;
   float right = linX + angZ * WHEEL_DIST * 0.5f;
@@ -281,7 +292,7 @@ static void processLine(const char* line)
   if (strcmp(line, "list_subs") == 0)
   {
     SerialUSB.println("subscriptions ["
-      "{\"cmd_vel\": \"geometry_msgs/msg/Twist\"}, "
+      "{\"cmd_vel\": \"geometry_msgs/msg/TwistStamped\"}, "
       "{\"base_battery_enable_for_sec\": \"std_msgs/msg/UInt32\"}, "
       "{\"enable_publish_tf\": \"std_msgs/msg/Bool\"}, "
       "{\"imu/calibrate_accel_gyro\": \"std_msgs/msg/Empty\"}, "

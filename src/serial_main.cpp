@@ -112,7 +112,7 @@ static void publishOdometry(uint32_t sec, uint32_t nsec,
   JsonObject stamp = header.createNestedObject("stamp");
   stamp["sec"] = sec;
   stamp["nanosec"] = nsec;
-  header["frame_id"] = "wheel_odom";
+  header["frame_id"] = "odom";
   doc["child_frame_id"] = ODOM_CHILD_FRAME_ID;
 
   JsonObject pose = doc.createNestedObject("pose");
@@ -147,7 +147,7 @@ static void publishOdometry(uint32_t sec, uint32_t nsec,
   JsonArray tc = twist.createNestedArray("covariance");
   for (int i = 0; i < 36; i++) tc.add(poseCovariance[i]);
 
-  SerialUSB.print("pub odom nav_msgs/msg/Odometry ");
+  SerialUSB.print("pub wheel_odom nav_msgs/msg/Odometry ");
   serializeJson(doc, SerialUSB);
   SerialUSB.println();
 }
@@ -164,7 +164,7 @@ static void publishTfOdom(uint32_t sec, uint32_t nsec,
   JsonObject stamp = header.createNestedObject("stamp");
   stamp["sec"] = sec;
   stamp["nanosec"] = nsec;
-  header["frame_id"] = "wheel_odom";
+  header["frame_id"] = "odom";
   tf["child_frame_id"] = ODOM_CHILD_FRAME_ID;
 
   JsonObject transform = tf.createNestedObject("transform");
